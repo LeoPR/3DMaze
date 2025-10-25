@@ -1,4 +1,4 @@
-// Raycasting protótipo simples (JS)
+// Raycasting protótipo simples (JS) - versão corrigida
 // Usa o mesmo mapa (MAZE) do protótipo 2D. Renderiza visão em 1ª pessoa via raycasting.
 
 const canvas = document.getElementById('gameCanvas');
@@ -27,11 +27,11 @@ const CELL = 40; // unidade do mapa
 
 // Player (pos em coordenadas de mundo, não apenas tile)
 let player = {
-  x: 1.5, // dentro do tile 1,1 (centro)
+  x: 1.5,
   y: 1.5,
-  angle: 0, // radianos, 0 apontando para a direita
+  angle: 0,
   moveSpeed: 2.4, // tiles por segundo
-  rotSpeed: Math.PI, // rad/s
+  rotSpeed: Math.PI // rad/s
 };
 
 // Portal e monstro (pos tile-center)
@@ -48,7 +48,6 @@ const NUM_RAYS = 240; // resolução horizontal do raycast
 
 // Resize canvas logical size for consistent ray steps
 function fitCanvas(){
-  // manter 600x440 físico, mas aproveitar size real para desenho
   canvas.width = 600; canvas.height = 440;
 }
 fitCanvas();
@@ -60,14 +59,12 @@ function tileAt(x,y){
   if(tx < 0 || tx >= COLS || ty < 0 || ty >= ROWS) return 1;
   return MAZE[ty][tx];
 }
-
 function clampAngle(a){
   let v = a % (Math.PI*2);
   if(v < -Math.PI) v += Math.PI*2;
   if(v > Math.PI) v -= Math.PI*2;
   return v;
 }
-
 function distance(ax,ay,bx,by){
   const dx = bx-ax; const dy = by-ay; return Math.hypot(dx,dy);
 }
@@ -88,7 +85,6 @@ function movePlayer(forward,strafe,dt){
   checkPortalCollision();
   checkMonsterCollision();
 }
-
 function checkPortalCollision(){
   if(Math.floor(player.x) === Math.floor(portal.x) && Math.floor(player.y) === Math.floor(portal.y)){
     gameState = 'won';
@@ -124,14 +120,12 @@ function monsterStep(){
 
 // Raycast routine (DDA-style stepping)
 function castRay(rayAngle){
-  // normalize angle
   rayAngle = clampAngle(rayAngle);
   const sinA = Math.sin(rayAngle), cosA = Math.cos(rayAngle);
   let distanceToWall = 0;
   const maxDepth = 20.0;
   let hit = false;
   let hitX=0, hitY=0;
-  // DDA stepping with small increments
   const stepSize = 0.02;
   while(!hit && distanceToWall < maxDepth){
     distanceToWall += stepSize;
@@ -147,11 +141,15 @@ function castRay(rayAngle){
   return {distance: distanceToWall, hitX, hitY, angle: rayAngle};
 }
 
-// Render loop
+// Render loop (agora também atualiza controles)
 let lastTime = performance.now();
 function render(now){
   const dt = Math.min(0.05, (now - lastTime)/1000);
   lastTime = now;
+
+  // Atualiza controles (movimentação) usando dt calculado aqui
+  updateControls(dt);
+
   // clear
   ctx.fillStyle = '#87CEEB'; // sky
   ctx.fillRect(0,0,canvas.width, canvas.height/2);
@@ -159,7 +157,7 @@ function render(now){
   ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height/2);
 
   // cast rays
-  for(let i=0;i<NUM_RAYS;i++){ 
+  for(let i=0;i<NUM_RAYS;i++){
     const rayScreenPos = (i / NUM_RAYS) - 0.5; // -0.5 .. 0.5
     const rayAngle = player.angle + rayScreenPos * FOV;
     const ray = castRay(rayAngle);
@@ -168,7 +166,6 @@ function render(now){
     const x = Math.floor(i * (canvas.width / NUM_RAYS));
     const h = Math.floor(wallHeight);
     const top = Math.floor((canvas.height/2) - (h/2));
-    // shade by distance
     const shade = Math.max(0, 255 - Math.floor(correctedDist * 18));
     ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
     ctx.fillRect(x, top, Math.ceil(canvas.width/NUM_RAYS)+1, h);
@@ -183,7 +180,6 @@ function render(now){
   if(Math.abs(delta) < FOV/2 && distM > 0.2){
     const screenX = Math.floor((0.5 + (delta / FOV)) * canvas.width);
     const size = Math.min(canvas.width/2, Math.max(6, (CELL*300) / distM));
-    const sy = Math.floor((canvas.height/2) - size/2);
     ctx.fillStyle = 'rgba(231,76,60,0.95)';
     ctx.beginPath();
     ctx.ellipse(screenX, canvas.height/2, size/3, size/2, 0, 0, Math.PI*2);
@@ -193,7 +189,7 @@ function render(now){
   // HUD - mini map (top-left small)
   drawMinimap();
 
-  // advance frame
+  // continue loop
   requestAnimationFrame(render);
 }
 
@@ -206,8 +202,8 @@ function drawMinimap(){
   ctx.fillStyle = 'rgba(0,0,0,0.4)';
   const w = COLS*mapScale+ox*2, h = ROWS*mapScale+oy*2;
   ctx.fillRect(6,6,w,h);
-  for(let r=0;r<ROWS;r++){ 
-    for(let c=0;c<COLS;c++){ 
+  for(let r=0;r<ROWS;r++){
+    for(let c=0;c<COLS;c++){
       const x = 6 + ox + c*mapScale;
       const y = 6 + oy + r*mapScale;
       ctx.fillStyle = MAZE[r][c] === 1 ? '#222' : '#ddd';
@@ -232,13 +228,11 @@ window.addEventListener('keydown', (e)=>{ keys[e.key.toLowerCase()] = true; });
 window.addEventListener('keyup', (e)=>{ keys[e.key.toLowerCase()] = false; });
 
 function updateControls(dt){
-  // forward/back: w/s or arrowup/arrowdown
   let forward = 0, strafe = 0, turn = 0;
   if(keys['w'] || keys['arrowup']) forward += 1;
   if(keys['s'] || keys['arrowdown']) forward -= 1;
   if(keys['a'] || keys['arrowleft']) turn -= 1; // turn left
   if(keys['d'] || keys['arrowright']) turn += 1; // turn right
-  // strafing with q/e or no
   if(keys['q']) strafe -= 1;
   if(keys['e']) strafe += 1;
   // apply rotation
@@ -246,14 +240,6 @@ function updateControls(dt){
   player.angle = clampAngle(player.angle);
   // move
   movePlayer(forward, strafe, dt);
-}
-
-// Main loop that updates controls and let render run via RAF
-function mainLoop(now){
-  const dt = Math.min(0.05, (now - lastTime)/1000);
-  lastTime = now;
-  updateControls(dt);
-  requestAnimationFrame(mainLoop);
 }
 
 // Reset game
@@ -266,13 +252,12 @@ function resetGame(){
 }
 resetBtn.addEventListener('click', resetGame);
 
-// Start monster timer and loops
+// Start monster timer and loop
 function start(){
   if(monsterTimer) clearInterval(monsterTimer);
   monsterTimer = setInterval(monsterStep, monsterMoveInterval);
   lastTime = performance.now();
   requestAnimationFrame(render);
-  requestAnimationFrame(mainLoop);
 }
 
 // initial guard: ensure canvas/context
