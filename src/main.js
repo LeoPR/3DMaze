@@ -1,16 +1,12 @@
-// Protótipo simples de labirinto 2D (JS)
-// Grade: 11 linhas x 15 colunas (cada célula 40px, canvas 600x440)
+// Raycasting protótipo simples (JS)
+// Usa o mesmo mapa (MAZE) do protótipo 2D. Renderiza visão em 1ª pessoa via raycasting.
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 const resetBtn = document.getElementById('resetBtn');
 
-const COLS = 15;
-const ROWS = 11;
-const CELL = 40; // 600 / 15 = 40, 440 / 11 = 40
-
-// 0 = caminho, 1 = parede
+// Map grid (15x11) - 0 caminho, 1 parede (mesmo que antes)
 const MAZE = [
   [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
   [1,0,0,0,1,0,0,0,0,0,1,0,0,0,1],
@@ -25,136 +21,265 @@ const MAZE = [
   [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
 ];
 
-// Entities (positions are [col, row])
-let player = { x: 1, y: 1 };
-let portal = { x: 13, y: 9 };
-let monster = { x: 7, y: 5 };
+const COLS = MAZE[0].length;
+const ROWS = MAZE.length;
+const CELL = 40; // unidade do mapa
 
-let gameState = 'playing'; // 'playing', 'won', 'lost'
+// Player (pos em coordenadas de mundo, não apenas tile)
+let player = {
+  x: 1.5, // dentro do tile 1,1 (centro)
+  y: 1.5,
+  angle: 0, // radianos, 0 apontando para a direita
+  moveSpeed: 2.4, // tiles por segundo
+  rotSpeed: Math.PI, // rad/s
+};
 
-// Draw loop
-function draw(){
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  // draw grid
-  for(let r=0;r<ROWS;r++){ 
-    for(let c=0;c<COLS;c++){ 
-      const x = c * CELL;
-      const y = r * CELL;
-      if(MAZE[r][c] === 1){
-        ctx.fillStyle = '#222';
-        ctx.fillRect(x,y,CELL,CELL);
-      } else {
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(x,y,CELL,CELL);
-      }
-      // optional grid lines
-      ctx.strokeStyle = '#eee';
-      ctx.strokeRect(x,y,CELL,CELL);
-    }
-  }
+// Portal e monstro (pos tile-center)
+let portal = { x: 13.5, y: 9.5 };
+let monster = { x: 7.5, y: 5.5 };
+let monsterTimer = null;
+let monsterMoveInterval = 1000; // ms
 
-  // portal
-  ctx.fillStyle = '#2ecc71';
-  ctx.fillRect(portal.x*CELL+6, portal.y*CELL+6, CELL-12, CELL-12);
+let gameState = 'playing'; // playing, won, lost
 
-  // monster
-  ctx.fillStyle = '#e74c3c';
-  ctx.beginPath();
-  ctx.arc(monster.x*CELL + CELL/2, monster.y*CELL + CELL/2, CELL/2 - 6, 0, Math.PI*2);
-  ctx.fill();
+// Raycasting parameters
+const FOV = (60 * Math.PI) / 180; // 60 graus
+const NUM_RAYS = 240; // resolução horizontal do raycast
 
-  // player
-  ctx.fillStyle = '#3498db';
-  ctx.beginPath();
-  ctx.arc(player.x*CELL + CELL/2, player.y*CELL + CELL/2, CELL/2 - 8, 0, Math.PI*2);
-  ctx.fill();
+// Resize canvas logical size for consistent ray steps
+function fitCanvas(){
+  // manter 600x440 físico, mas aproveitar size real para desenho
+  canvas.width = 600; canvas.height = 440;
+}
+fitCanvas();
 
-  // status overlay
-  if(gameState === 'won' || gameState === 'lost'){
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(0, canvas.height/2 - 40, canvas.width, 80);
-    ctx.fillStyle = '#fff';
-    ctx.font = '28px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(gameState === 'won' ? 'Você venceu!' : 'Você foi pego!', canvas.width/2, canvas.height/2 + 8);
-  }
-  requestAnimationFrame(()=>{});
+// Helpers
+function tileAt(x,y){
+  const tx = Math.floor(x);
+  const ty = Math.floor(y);
+  if(tx < 0 || tx >= COLS || ty < 0 || ty >= ROWS) return 1;
+  return MAZE[ty][tx];
 }
 
-// Start drawing loop via simple interval refresh (sufficient para protótipo)
-setInterval(() => {
-  draw();
-}, 1000/30);
-
-// Movement helpers
-function canMoveTo(x,y){
-  return x >= 0 && x < COLS && y >= 0 && y < ROWS && MAZE[y][x] === 0;
+function clampAngle(a){
+  let v = a % (Math.PI*2);
+  if(v < -Math.PI) v += Math.PI*2;
+  if(v > Math.PI) v -= Math.PI*2;
+  return v;
 }
 
-function attemptMovePlayer(dx,dy){
+function distance(ax,ay,bx,by){
+  const dx = bx-ax; const dy = by-ay; return Math.hypot(dx,dy);
+}
+
+// Movement and collision
+function movePlayer(forward,strafe,dt){
   if(gameState !== 'playing') return;
-  const nx = player.x + dx;
-  const ny = player.y + dy;
-  if(canMoveTo(nx,ny)){ 
-    player.x = nx; player.y = ny;
-    checkPortal();
-    checkMonsterCollision();
-  }
+  const ang = player.angle;
+  const vx = Math.cos(ang) * forward - Math.sin(ang) * strafe;
+  const vy = Math.sin(ang) * forward + Math.cos(ang) * strafe;
+  const speed = player.moveSpeed * dt;
+  const nx = player.x + vx * speed;
+  const ny = player.y + vy * speed;
+  // collision simple: check tile
+  if(tileAt(nx, player.y) === 0) player.x = nx;
+  if(tileAt(player.x, ny) === 0) player.y = ny;
+  // collisions with monster or portal
+  checkPortalCollision();
+  checkMonsterCollision();
 }
 
-function checkPortal(){
-  if(player.x === portal.x && player.y === portal.y){
+function checkPortalCollision(){
+  if(Math.floor(player.x) === Math.floor(portal.x) && Math.floor(player.y) === Math.floor(portal.y)){
     gameState = 'won';
     statusEl.textContent = 'VENCEU!';
   }
 }
-
 function checkMonsterCollision(){
-  if(player.x === monster.x && player.y === monster.y){
+  const d = distance(player.x,player.y, monster.x, monster.y);
+  if(d < 0.6){
     gameState = 'lost';
     statusEl.textContent = 'FOI PEG0!';
   }
 }
 
-// Keyboard
-window.addEventListener('keydown', (e) => {
-  if(gameState !== 'playing') return;
-  const key = e.key.toLowerCase();
-  if(key === 'arrowup' || key === 'w') attemptMovePlayer(0,-1);
-  else if(key === 'arrowdown' || key === 's') attemptMovePlayer(0,1);
-  else if(key === 'arrowleft' || key === 'a') attemptMovePlayer(-1,0);
-  else if(key === 'arrowright' || key === 'd') attemptMovePlayer(1,0);
-});
-
-// Monster movement (aleatório) - move a cada 700ms
+// Simple monster movement (aleatório entre tiles disponíveis)
 function monsterStep(){
   if(gameState !== 'playing') return;
-  const dirs = [
-    {dx:0,dy:-1},{dx:0,dy:1},{dx:-1,dy:0},{dx:1,dy:0}
-  ];
-  // collect valid moves
-  const valid = dirs.map(d => ({x: monster.x + d.dx, y: monster.y + d.dy}))
-                    .filter(p => canMoveTo(p.x,p.y) && !(p.x === portal.x && p.y === portal.y));
+  const dirs = [ [0,-1],[0,1],[-1,0],[1,0] ];
+  const valid = [];
+  for(const d of dirs){
+    const nx = monster.x + d[0];
+    const ny = monster.y + d[1];
+    if(tileAt(nx,ny) === 0 && !(Math.floor(nx) === Math.floor(portal.x) && Math.floor(ny) === Math.floor(portal.y))){
+      valid.push({x:nx,y:ny});
+    }
+  }
   if(valid.length > 0){
     const choice = valid[Math.floor(Math.random()*valid.length)];
-    monster.x = choice.x;
-    monster.y = choice.y;
+    monster.x = choice.x; monster.y = choice.y;
     checkMonsterCollision();
   }
 }
-const monsterTimer = setInterval(monsterStep, 700);
 
-// Reset
+// Raycast routine (DDA-style stepping)
+function castRay(rayAngle){
+  // normalize angle
+  rayAngle = clampAngle(rayAngle);
+  const sinA = Math.sin(rayAngle), cosA = Math.cos(rayAngle);
+  let distanceToWall = 0;
+  const maxDepth = 20.0;
+  let hit = false;
+  let hitX=0, hitY=0;
+  // DDA stepping with small increments
+  const stepSize = 0.02;
+  while(!hit && distanceToWall < maxDepth){
+    distanceToWall += stepSize;
+    const testX = player.x + cosA * distanceToWall;
+    const testY = player.y + sinA * distanceToWall;
+    if(testX < 0 || testX >= COLS || testY < 0 || testY >= ROWS){
+      hit = true; distanceToWall = maxDepth; break;
+    }
+    if(tileAt(testX, testY) === 1){
+      hit = true; hitX = testX; hitY = testY; break;
+    }
+  }
+  return {distance: distanceToWall, hitX, hitY, angle: rayAngle};
+}
+
+// Render loop
+let lastTime = performance.now();
+function render(now){
+  const dt = Math.min(0.05, (now - lastTime)/1000);
+  lastTime = now;
+  // clear
+  ctx.fillStyle = '#87CEEB'; // sky
+  ctx.fillRect(0,0,canvas.width, canvas.height/2);
+  ctx.fillStyle = '#7f7f7f'; // floor
+  ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height/2);
+
+  // cast rays
+  for(let i=0;i<NUM_RAYS;i++){ 
+    const rayScreenPos = (i / NUM_RAYS) - 0.5; // -0.5 .. 0.5
+    const rayAngle = player.angle + rayScreenPos * FOV;
+    const ray = castRay(rayAngle);
+    const correctedDist = ray.distance * Math.cos(clampAngle(rayAngle - player.angle));
+    const wallHeight = Math.min(10000, (CELL * 300) / (correctedDist + 0.0001));
+    const x = Math.floor(i * (canvas.width / NUM_RAYS));
+    const h = Math.floor(wallHeight);
+    const top = Math.floor((canvas.height/2) - (h/2));
+    // shade by distance
+    const shade = Math.max(0, 255 - Math.floor(correctedDist * 18));
+    ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
+    ctx.fillRect(x, top, Math.ceil(canvas.width/NUM_RAYS)+1, h);
+  }
+
+  // draw monster as simple sprite projection
+  const dx = monster.x - player.x;
+  const dy = monster.y - player.y;
+  const distM = Math.hypot(dx,dy);
+  let angleToM = Math.atan2(dy,dx);
+  let delta = clampAngle(angleToM - player.angle);
+  if(Math.abs(delta) < FOV/2 && distM > 0.2){
+    const screenX = Math.floor((0.5 + (delta / FOV)) * canvas.width);
+    const size = Math.min(canvas.width/2, Math.max(6, (CELL*300) / distM));
+    const sy = Math.floor((canvas.height/2) - size/2);
+    ctx.fillStyle = 'rgba(231,76,60,0.95)';
+    ctx.beginPath();
+    ctx.ellipse(screenX, canvas.height/2, size/3, size/2, 0, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // HUD - mini map (top-left small)
+  drawMinimap();
+
+  // advance frame
+  requestAnimationFrame(render);
+}
+
+// Mini-map drawing for orientation
+function drawMinimap(){
+  const mapScale = 6;
+  const ox = 8, oy = 8;
+  ctx.save();
+  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  const w = COLS*mapScale+ox*2, h = ROWS*mapScale+oy*2;
+  ctx.fillRect(6,6,w,h);
+  for(let r=0;r<ROWS;r++){ 
+    for(let c=0;c<COLS;c++){ 
+      const x = 6 + ox + c*mapScale;
+      const y = 6 + oy + r*mapScale;
+      ctx.fillStyle = MAZE[r][c] === 1 ? '#222' : '#ddd';
+      ctx.fillRect(x,y,mapScale-1,mapScale-1);
+    }
+  }
+  // portal
+  ctx.fillStyle = '#2ecc71';
+  ctx.fillRect(6+ox + Math.floor(portal.x-0.5)*mapScale, 6+oy + Math.floor(portal.y-0.5)*mapScale, mapScale-1, mapScale-1);
+  // monster
+  ctx.fillStyle = '#e74c3c';
+  ctx.fillRect(6+ox + Math.floor(monster.x-0.5)*mapScale, 6+oy + Math.floor(monster.y-0.5)*mapScale, mapScale-1, mapScale-1);
+  // player
+  ctx.fillStyle = '#3498db';
+  ctx.fillRect(6+ox + Math.floor(player.x-0.5)*mapScale, 6+oy + Math.floor(player.y-0.5)*mapScale, mapScale-1, mapScale-1);
+  ctx.restore();
+}
+
+// Input handling
+const keys = {};
+window.addEventListener('keydown', (e)=>{ keys[e.key.toLowerCase()] = true; });
+window.addEventListener('keyup', (e)=>{ keys[e.key.toLowerCase()] = false; });
+
+function updateControls(dt){
+  // forward/back: w/s or arrowup/arrowdown
+  let forward = 0, strafe = 0, turn = 0;
+  if(keys['w'] || keys['arrowup']) forward += 1;
+  if(keys['s'] || keys['arrowdown']) forward -= 1;
+  if(keys['a'] || keys['arrowleft']) turn -= 1; // turn left
+  if(keys['d'] || keys['arrowright']) turn += 1; // turn right
+  // strafing with q/e or no
+  if(keys['q']) strafe -= 1;
+  if(keys['e']) strafe += 1;
+  // apply rotation
+  player.angle += turn * player.rotSpeed * dt;
+  player.angle = clampAngle(player.angle);
+  // move
+  movePlayer(forward, strafe, dt);
+}
+
+// Main loop that updates controls and let render run via RAF
+function mainLoop(now){
+  const dt = Math.min(0.05, (now - lastTime)/1000);
+  lastTime = now;
+  updateControls(dt);
+  requestAnimationFrame(mainLoop);
+}
+
+// Reset game
 function resetGame(){
-  player = { x: 1, y: 1 };
-  portal = { x: 13, y: 9 };
-  monster = { x: 7, y: 5 };
+  player = { x:1.5, y:1.5, angle: 0, moveSpeed:2.4, rotSpeed: Math.PI };
+  portal = { x:13.5, y:9.5 };
+  monster = { x:7.5, y:5.5 };
   gameState = 'playing';
   statusEl.textContent = '';
 }
-resetBtn.addEventListener('click', () => {
-  resetGame();
-});
+resetBtn.addEventListener('click', resetGame);
 
-// initial draw
-draw();
+// Start monster timer and loops
+function start(){
+  if(monsterTimer) clearInterval(monsterTimer);
+  monsterTimer = setInterval(monsterStep, monsterMoveInterval);
+  lastTime = performance.now();
+  requestAnimationFrame(render);
+  requestAnimationFrame(mainLoop);
+}
+
+// initial guard: ensure canvas/context
+if(!canvas || !ctx){
+  const msg = document.createElement('div');
+  msg.textContent = 'Erro: canvas não encontrado ou não é suportado no navegador.';
+  document.body.appendChild(msg);
+} else {
+  start();
+}
